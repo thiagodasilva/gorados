@@ -1,21 +1,50 @@
 package main
 
-// #cgo LDFLAGS: -lrados
+// #cgo LDFLAGS: -lrados -lradosstriper
 // #include <stdio.h>
 // #include <stdlib.h>
 // #include <rados/librados.h>
-// #include <rados/libradosstriper.h>
+// #include <radosstriper/libradosstriper.h>
 import "C"
 import "unsafe"
 
 import (
 	"fmt"
+	"math/rand"
+	"time"
 )
+
+
+var src = rand.NewSource(time.Now().UnixNano())
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+const (
+    letterIdxBits = 6                    // 6 bits to represent a letter index
+    letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
+    letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
+)
+
+func RandStringBytesMaskImprSrc(n int) string {
+    b := make([]byte, n)
+    // A src.Int63() generates 63 random bits, enough for letterIdxMax characters!
+    for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
+        if remain == 0 {
+            cache, remain = src.Int63(), letterIdxMax
+        }
+        if idx := int(cache & letterIdxMask); idx < len(letterBytes) {
+            b[i] = letterBytes[idx]
+            i--
+        }
+        cache >>= letterIdxBits
+        remain--
+    }
+
+    return string(b)
+}
 
 func write_stripe(io C.rados_ioctx_t, key string, data string, size int) {
 	var striper C.rados_striper_t
 
-	err = C.rados_striper_create(io, &striper)
+	err := C.rados_striper_create(io, &striper)
 	if err < 0 {
 		fmt.Println("create striper failed")
 	} else {
@@ -25,7 +54,7 @@ func write_stripe(io C.rados_ioctx_t, key string, data string, size int) {
 
 	obj := C.CString(key)
 	cdata := C.CString(data)
-	err := C.rados_striper_write_full(striper, obj, cdata, C.size_t(size)) 
+	err = C.rados_striper_write_full(striper, obj, cdata, C.size_t(size)) 
 	if err < 0 {
 		fmt.Println("stripe write failed")
 	} else {
@@ -108,12 +137,12 @@ func main() {
 	}
 
 	
-        godata := "hello librados"
+	godata := RandStringBytesMaskImprSrc(10485760)
 	obj := "obj"
 	write_stripe(io, obj, godata, len(godata)) 
-	read_data := read(io, obj, len(godata))
+	//read_data := read(io, obj, len(godata))
+	//fmt.Println(read_data)
 
-	fmt.Println(read_data)
 	C.rados_ioctx_destroy(io)
 
 	C.rados_shutdown(cluster)
