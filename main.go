@@ -11,10 +11,13 @@ import "unsafe"
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 )
 
 type RadosStripedObject struct {
 	objectName string
+	offset     int64
 	striper    C.rados_striper_t
 	ioctx      C.rados_ioctx_t
 }
@@ -34,27 +37,13 @@ func (rso RadosStripedObject) WriteAt(p []byte, off int64) (n int, err error) {
 }
 
 func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
-	ret := C.rados_striper_create(rso.ioctx, &rso.striper)
-	if ret < 0 {
-		return int(ret), errors.New("Unable to create striper object")
-	}
-	defer C.rados_striper_destroy(rso.striper)
 
-	written := 0
-	buf_len := 0
-	buf_size := 1024 * 64
-	for written < len(p) {
-		buf_len = written + buf_size
-		if buf_len > len(p) {
-			buf_len = len(p)
-		}
-		_, err := rso.WriteAt(p[written:buf_len], int64(written))
-		if err != nil {
-			return -1, err
-		}
-		written += buf_size
+	written, err := rso.WriteAt(p, rso.offset)
+	if err != nil {
+		return -1, err
 	}
-	return len(p), nil
+	rso.offset = rso.offset + int64(written)
+	return written, nil
 }
 
 func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
@@ -63,8 +52,6 @@ func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
 	err := C.rados_striper_create(io, &striper)
 	if err < 0 {
 		fmt.Println("create striper failed")
-	} else {
-		fmt.Println("create striper success")
 	}
 	defer C.rados_striper_destroy(striper)
 	obj := C.CString(key)
@@ -73,8 +60,6 @@ func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
 	err = C.rados_striper_read(striper, obj, (*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)
 	if err < 0 {
 		fmt.Println("read failed")
-	} else {
-		fmt.Println("read success")
 	}
 
 	return read_data
@@ -82,7 +67,6 @@ func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
 
 func main() {
 	var cluster C.rados_t
-	var io C.rados_ioctx_t
 	conf := C.CString("/etc/ceph/ceph.conf")
 	pool := C.CString("test")
 	defer C.free(unsafe.Pointer(conf))
@@ -91,45 +75,40 @@ func main() {
 	err := C.rados_create(&cluster, nil)
 	if err < 0 {
 		fmt.Println("create failed")
-	} else {
-		fmt.Println("create success")
 	}
 
 	err1 := C.rados_conf_read_file(cluster, conf)
 	if err1 < 0 {
 		fmt.Println("conf failed")
-	} else {
-		fmt.Println("conf success")
 	}
 
 	err2 := C.rados_connect(cluster)
 	if err2 < 0 {
 		fmt.Println("connect failed")
-	} else {
-		fmt.Println("connect success")
 	}
+	defer C.rados_shutdown(cluster)
 
-	err = C.rados_ioctx_create(cluster, pool, &io)
+	obj := RadosStripedObject{}
+	err = C.rados_ioctx_create(cluster, pool, &obj.ioctx)
 	if err < 0 {
 		fmt.Println("create ioctx failed")
-	} else {
-		fmt.Println("create ioctx success")
 	}
+	defer C.rados_ioctx_destroy(obj.ioctx)
 
-	godata := make([]byte, 50000000)
-	for i := range godata {
-		godata[i] = 1
+	ret := C.rados_striper_create(obj.ioctx, &obj.striper)
+	if ret < 0 {
+		fmt.Println("create striper failed")
 	}
-	//godata := []byte("hello world of golang")
-	obj := RadosStripedObject{}
+	defer C.rados_striper_destroy(obj.striper)
+
+	f, e := os.Open("/home/vagrant/input.txt")
+	if e != nil {
+		panic(e)
+	}
 	obj.objectName = "obj"
-	obj.ioctx = io
-	obj.Write(godata)
+	io.Copy(obj, f)
 
-	read_data := read_stripe(io, obj.objectName, 10)
-	fmt.Println(read_data)
+	read_data := read_stripe(obj.ioctx, obj.objectName, 21)
+	fmt.Println(string(read_data))
 
-	C.rados_ioctx_destroy(io)
-
-	C.rados_shutdown(cluster)
 }
