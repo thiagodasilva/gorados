@@ -36,7 +36,7 @@ func (rso RadosStripedObject) WriteAt(p []byte, off int64) (n int, err error) {
 	}
 }
 
-func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
+func (rso RadosStripedObject) Write2(p []byte) (n int, err error) {
 
 	written, err := rso.WriteAt(p, rso.offset)
 	if err != nil {
@@ -44,6 +44,21 @@ func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
 	}
 	rso.offset = rso.offset + int64(written)
 	return written, nil
+}
+
+func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
+	obj := C.CString(rso.objectName)
+	defer C.free(unsafe.Pointer(obj))
+
+	c_data := (*C.char)(unsafe.Pointer(&p[0]))
+	c_size := C.size_t(len(p))
+
+	ret := C.rados_striper_append(rso.striper, obj, c_data, c_size)
+	if ret < 0 {
+		return int(ret), errors.New("Unable to write")
+	} else {
+		return len(p), nil
+	}
 }
 
 func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
@@ -57,7 +72,8 @@ func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
 	obj := C.CString(key)
 
 	read_data := make([]byte, size)
-	err = C.rados_striper_read(striper, obj, (*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)
+	err = C.rados_striper_read(striper, obj,
+		(*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)
 	if err < 0 {
 		fmt.Println("read failed")
 	}
