@@ -10,38 +10,21 @@ import "unsafe"
 
 import (
 	"fmt"
-	"math/rand"
-	"time"
 )
 
 
-var src = rand.NewSource(time.Now().UnixNano())
-const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-const (
-    letterIdxBits = 6                    // 6 bits to represent a letter index
-    letterIdxMask = 1<<letterIdxBits - 1 // All 1-bits, as many as letterIdxBits
-    letterIdxMax  = 63 / letterIdxBits   // # of letter indices fitting in 63 bits
-)
-
-func RandStringBytesMaskImprSrc(n int) string {
-    b := make([]byte, n)
-    // A src.Int63() generates 63 random bits, enough for letterIdxMax characters!
-    for i, cache, remain := n-1, src.Int63(), letterIdxMax; i >= 0; {
-        if remain == 0 {
-            cache, remain = src.Int63(), letterIdxMax
-        }
-        if idx := int(cache & letterIdxMask); idx < len(letterBytes) {
-            b[i] = letterBytes[idx]
-            i--
-        }
-        cache >>= letterIdxBits
-        remain--
-    }
-
-    return string(b)
+func rados_write_stripe(striper C.rados_striper_t, obj_name string, data []byte, offset int) int {
+	//fmt.Println("writing this data:", string(data))
+	obj := C.CString(obj_name)
+	defer C.free(unsafe.Pointer(obj))
+	c_offset := C.uint64_t(offset)
+	c_data := (*C.char)(unsafe.Pointer(&data[0]))
+	c_size := C.size_t(len(data))
+	err := C.rados_striper_write(striper, obj, c_data, c_size, c_offset)
+	return int(err)
 }
-
-func write_stripe(io C.rados_ioctx_t, key string, data string, size int) {
+	
+func write_stripe(io C.rados_ioctx_t, obj_name string, data []byte) {
 	var striper C.rados_striper_t
 
 	err := C.rados_striper_create(io, &striper)
@@ -52,52 +35,45 @@ func write_stripe(io C.rados_ioctx_t, key string, data string, size int) {
 	}
 	defer C.rados_striper_destroy(striper)
 
-	obj := C.CString(key)
-	cdata := C.CString(data)
-	err = C.rados_striper_write_full(striper, obj, cdata, C.size_t(size)) 
-	if err < 0 {
-		fmt.Println("stripe write failed")
-	} else {
-		fmt.Println("stripe write success")
-	}
-
-}
-
-func write(io C.rados_ioctx_t, key string, data string, size int) {
-	offset := 0
-	stripe_size := 5
-	stripe_count := size / stripe_size
-	for i := 0; i < stripe_count; i++ {
-		key_s := fmt.Sprint(key, "_", i)
-		obj := C.CString(key_s)
-		cdata := C.CString(data[offset:offset+stripe_size])
-		data_size := C.size_t(stripe_size)
-		defer C.free(unsafe.Pointer(obj))
-		defer C.free(unsafe.Pointer(cdata))
-
-		err := C.rados_write_full(io, obj, cdata, data_size)
-		if err < 0 {
-			fmt.Println("write failed")
-		} else {
-			fmt.Println("write success")
+	written := 0
+	buf_len := 0
+	buf_size := 1024*64
+	for written < len(data) {
+		buf_len = written+buf_size
+		if buf_len > len(data) {
+			buf_len = len(data)
 		}
-		offset = offset + stripe_size
+		err := rados_write_stripe(striper, obj_name, data[written:buf_len], written)
+		if err < 0 {
+			fmt.Println("stripe write failed")
+			return
+		}
+		written += buf_size	
 	}
+
 }
 
-func read(io C.rados_ioctx_t, key string, size int) string {
-	i := 0
-	key_s := fmt.Sprint(key, "_", i)
-	c_obj := C.CString(key_s)
-	defer C.free(unsafe.Pointer(c_obj))
+func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
+	var striper C.rados_striper_t
+
+	err := C.rados_striper_create(io, &striper)
+	if err < 0 {
+		fmt.Println("create striper failed")
+	} else {
+		fmt.Println("create striper success")
+	}
+	defer C.rados_striper_destroy(striper)
+	obj := C.CString(key)
+
 	read_data := make([]byte, size)
-	err := C.rados_read(io, c_obj, (*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)	
+	err = C.rados_striper_read(striper, obj, (*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)	
 	if err < 0 {
 		fmt.Println("read failed")
 	} else {
 		fmt.Println("read success")
 	}
-	return string(read_data)
+
+	return read_data
 }
 
 func main() {
@@ -137,11 +113,15 @@ func main() {
 	}
 
 	
-	godata := RandStringBytesMaskImprSrc(10485760)
+    	godata := make([]byte, 50000000)
+	for i := range godata { godata[i] = 1 }
+	fmt.Println(godata[:10])
+	//godata := []byte("hello world of golang")
 	obj := "obj"
-	write_stripe(io, obj, godata, len(godata)) 
-	//read_data := read(io, obj, len(godata))
-	//fmt.Println(read_data)
+	write_stripe(io, obj, godata) 
+
+	read_data := read_stripe(io, obj, 10)
+	fmt.Println(read_data)
 
 	C.rados_ioctx_destroy(io)
 
