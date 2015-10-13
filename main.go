@@ -16,13 +16,13 @@ import (
 )
 
 type RadosStripedObject struct {
-	objectName string
-	offset     int64
-	striper    C.rados_striper_t
-	ioctx      C.rados_ioctx_t
+	objectName  string
+	striper     C.rados_striper_t
+	ioctx       C.rados_ioctx_t
+	read_offset int64
 }
 
-func (rso RadosStripedObject) WriteAt(p []byte, off int64) (n int, err error) {
+func (rso *RadosStripedObject) WriteAt(p []byte, off int64) (n int, err error) {
 	obj := C.CString(rso.objectName)
 	defer C.free(unsafe.Pointer(obj))
 	c_offset := C.uint64_t(off)
@@ -34,16 +34,6 @@ func (rso RadosStripedObject) WriteAt(p []byte, off int64) (n int, err error) {
 	} else {
 		return len(p), nil
 	}
-}
-
-func (rso RadosStripedObject) Write2(p []byte) (n int, err error) {
-
-	written, err := rso.WriteAt(p, rso.offset)
-	if err != nil {
-		return -1, err
-	}
-	rso.offset = rso.offset + int64(written)
-	return written, nil
 }
 
 func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
@@ -61,24 +51,22 @@ func (rso RadosStripedObject) Write(p []byte) (n int, err error) {
 	}
 }
 
-func read_stripe(io C.rados_ioctx_t, key string, size int) []byte {
-	var striper C.rados_striper_t
+func (rso RadosStripedObject) Read(p []byte) (n int, err error) {
+	obj := C.CString(rso.objectName)
+	defer C.free(unsafe.Pointer(obj))
 
-	err := C.rados_striper_create(io, &striper)
-	if err < 0 {
-		fmt.Println("create striper failed")
+	c_size := C.size_t(len(p))
+	ret := C.rados_striper_read(rso.striper, obj,
+		(*C.char)(unsafe.Pointer(&p[0])), C.size_t(c_size),
+		C.uint64_t(rso.read_offset))
+	if ret < 0 {
+		return int(ret), errors.New("Unable to write")
+	} else {
+		rso.read_offset = rso.read_offset + int64(len(p))
+		fmt.Println("updated read_offset", rso.read_offset, len(p))
+
+		return len(p), nil
 	}
-	defer C.rados_striper_destroy(striper)
-	obj := C.CString(key)
-
-	read_data := make([]byte, size)
-	err = C.rados_striper_read(striper, obj,
-		(*C.char)(unsafe.Pointer(&read_data[0])), C.size_t(size), 0)
-	if err < 0 {
-		fmt.Println("read failed")
-	}
-
-	return read_data
 }
 
 func main() {
@@ -124,7 +112,12 @@ func main() {
 	obj.objectName = "obj"
 	io.Copy(obj, f)
 
-	read_data := read_stripe(obj.ioctx, obj.objectName, 21)
-	fmt.Println(string(read_data))
+	out, e := os.Create("/home/vagrant/output.txt")
+	if e != nil {
+		panic(e)
+	}
+
+	// TODO Read is not working
+	io.Copy(out, obj)
 
 }
